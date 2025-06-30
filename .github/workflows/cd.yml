@@ -1,11 +1,10 @@
+
 name: Continuous Deployment
 
 on:
-  workflow_run:
-    workflows: ["Continuous Integration"]
-    types:
-      - completed
+  push:
     branches: [master]
+  workflow_dispatch:
 
 env:
   PROJECT_ID: aerostaraviation
@@ -16,27 +15,89 @@ env:
   REGISTRY: us-east1-docker.pkg.dev
 
 jobs:
-  deploy:
-    name: Build and Deploy to Cloud Run
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
-
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript check
+        run: npx tsc --noEmit
+
+  deploy:
+    name: Build and Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Install Google Cloud SDK
+        run: |
+          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+          curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+          sudo apt-get update && sudo apt-get install google-cloud-cli
+
+      - name: Create service account key from base64
+        run: |
+          echo "${{ secrets.GCP_SA_KEY_BASE64 }}" | base64 -d > ${{ runner.temp }}/gcp-key.json
+          echo "✅ Service account key file created"
+
+      - name: Verify key file
+        run: |
+          if [ -f "${{ runner.temp }}/gcp-key.json" ]; then
+            echo "✅ Key file exists"
+            echo "File size: $(wc -c < ${{ runner.temp }}/gcp-key.json) bytes"
+            if jq empty ${{ runner.temp }}/gcp-key.json 2>/dev/null; then
+              echo "✅ Valid JSON format"
+              echo "Project ID from key: $(jq -r '.project_id' ${{ runner.temp }}/gcp-key.json)"
+              echo "Service account email: $(jq -r '.client_email' ${{ runner.temp }}/gcp-key.json)"
+            else
+              echo "❌ Invalid JSON format"
+              exit 1
+            fi
+          else
+            echo "❌ Key file not found"
+            exit 1
+          fi
+
+      - name: Authenticate with Google Cloud
+        run: |
+          gcloud auth activate-service-account --key-file=${{ runner.temp }}/gcp-key.json
+          gcloud config set project ${{ env.PROJECT_ID }}
+
+      - name: Verify authentication
+        run: |
+          echo "✅ Authentication successful"
+          gcloud auth list
+          echo "Current project: $(gcloud config get-value project)"
 
       - name: Configure Docker to use gcloud as credential helper
         run: gcloud auth configure-docker ${{ env.REGISTRY }}
@@ -74,3 +135,8 @@ jobs:
             --format='value(status.url)')
           echo "🚀 Application deployed successfully!"
           echo "📱 Service URL: $SERVICE_URL"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ${{ runner.temp }}/gcp-key.json
