@@ -1,11 +1,10 @@
+
 name: Continuous Deployment
 
 on:
-  workflow_run:
-    workflows: ["Continuous Integration"]
-    types:
-      - completed
+  push:
     branches: [master]
+  workflow_dispatch:
 
 env:
   PROJECT_ID: aerostaraviation
@@ -16,38 +15,67 @@ env:
   REGISTRY: us-east1-docker.pkg.dev
 
 jobs:
-  deploy:
-    name: Build and Deploy to Cloud Run
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
-
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Debug secret availability
-        run: |
-          if [ -z "${{ secrets.GCP_SA_KEY }}" ]; then
-            echo "❌ GCP_SA_KEY secret is empty or not set"
-            exit 1
-          else
-            echo "✅ GCP_SA_KEY secret is available"
-            echo "Secret length: ${#GCP_SA_KEY}"
-          fi
-        env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript check
+        run: npx tsc --noEmit
+
+  deploy:
+    name: Build and Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate with service account
+        run: |
+          echo "$GCP_SA_KEY" > ${{ runner.temp }}/gcp-key.json
+          gcloud auth activate-service-account --key-file=${{ runner.temp }}/gcp-key.json
+          gcloud config set project ${{ env.PROJECT_ID }}
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Verify authentication
+        run: |
+          echo "Current authentication:"
+          gcloud auth list
+          echo "Current project:"
+          gcloud config get-value project
 
       - name: Configure Docker to use gcloud as credential helper
         run: gcloud auth configure-docker ${{ env.REGISTRY }}
@@ -85,3 +113,8 @@ jobs:
             --format='value(status.url)')
           echo "🚀 Application deployed successfully!"
           echo "📱 Service URL: $SERVICE_URL"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ${{ runner.temp }}/gcp-key.json
