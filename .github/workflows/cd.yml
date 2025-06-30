@@ -59,8 +59,11 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Install Google Cloud SDK
+        run: |
+          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+          curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+          sudo apt-get update && sudo apt-get install google-cloud-cli
 
       - name: Create service account key from base64
         run: |
@@ -74,6 +77,8 @@ jobs:
             echo "File size: $(wc -c < ${{ runner.temp }}/gcp-key.json) bytes"
             if jq empty ${{ runner.temp }}/gcp-key.json 2>/dev/null; then
               echo "✅ Valid JSON format"
+              echo "Project ID from key: $(jq -r '.project_id' ${{ runner.temp }}/gcp-key.json)"
+              echo "Service account email: $(jq -r '.client_email' ${{ runner.temp }}/gcp-key.json)"
             else
               echo "❌ Invalid JSON format"
               exit 1
@@ -83,7 +88,7 @@ jobs:
             exit 1
           fi
 
-      - name: Authenticate with service account
+      - name: Authenticate with Google Cloud
         run: |
           gcloud auth activate-service-account --key-file=${{ runner.temp }}/gcp-key.json
           gcloud config set project ${{ env.PROJECT_ID }}
