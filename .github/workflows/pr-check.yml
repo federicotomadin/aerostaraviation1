@@ -1,0 +1,54 @@
+name: Pull Request Check
+
+on:
+  pull_request:
+    branches: [ master, develop, staging ]
+
+jobs:
+  pr-check:
+    name: PR Quality Check
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Build application
+        run: npm run build
+
+      - name: Check Docker build
+        run: docker build --tag pr-test-build .
+
+      # Uncomment when you have tests configured
+      # - name: Run unit tests
+      #   run: npm test
+
+      - name: PR Status Summary
+        run: |
+          echo "✅ All CI checks passed!"
+          echo "📋 Checks completed:"
+          echo "  - ✅ Dependencies installed"
+          echo "  - ✅ ESLint passed"
+          echo "  - ✅ TypeScript compilation successful"
+          echo "  - ✅ Build successful"
+          echo "  - ✅ Docker build test passed"
